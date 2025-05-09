@@ -1,0 +1,76 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: onthego
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+  backend:
+    build: .
+    command: bash -c "celery -A celery_app.celery_app worker --loglevel=info & uvicorn main:app --host 0.0.0.0"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+      - "5555:5555"  # Flower UI
+    env_file:
+      - .env
+
+
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+
+class PredictIn(BaseModel):
+    data: float
+
+class PredictOut(BaseModel):
+    task_id: str
+
+class ResultOut(BaseModel):
+    task_id: str
+    status: str
+    result: Optional[float] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+from celery_app import celery_app
+from database import SessionLocal
+from models import Prediction
+import time
+from sklearn.linear_model import LinearRegression
+import numpy as np
+
+@celery_app.task(bind=True)
+def compute_prediction(self, pred_id: int, input_value: float):
+    db = SessionLocal()
+    pred: Prediction = db.query(Prediction).get(pred_id)
+    try:
+        # Simulate work
+        time.sleep(5)
+        # Dummy ML model: y = 2*x + 1
+        model = LinearRegression()
+        model.coef_ = np.array([2.0])
+        model.intercept_ = 1.0
+        result = float(model.coef_[0] * input_value + model.intercept_)
+        pred.result = result
+        pred.status = "SUCCESS"
+        pred.completed_at = func.now()
+        db.add(pred)
+        db.commit()
+    except Exception as e:
+        pred.status = "FAILURE"
+        db.add(pred)
+        db.commit()
+        raise e
+    finally:
+        db.close()
+    return result
